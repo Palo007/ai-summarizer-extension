@@ -86,6 +86,11 @@ export const getTranscript = async (
 };
 
 export const attemptGetTranscript = async (youtubeHtml: string) => {
+  // YouTube timedtext URLs now return empty bodies. Read the transcript
+  // from YouTube's own "Show transcript" panel first.
+  const domTranscript = await getTranscriptFromPage();
+  if (domTranscript?.length) return domTranscript;
+
   const isMobileYouTube = window.location.hostname === "m.youtube.com";
   const baseUrl = isMobileYouTube
     ? "https://m.youtube.com"
@@ -230,3 +235,79 @@ const parseXMLTranscript = (xmlText: string) => {
     return [];
   }
 };
+
+/**
+ * Reads the transcript from YouTube's "Show transcript" panel on the current
+ * page (desktop only). Opens the panel if needed and closes it afterwards.
+ */
+async function getTranscriptFromPage(): Promise<TranscriptSegment[] | null> {
+  try {
+    if (window.location.hostname === "m.youtube.com") return null;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const ROWS = "transcript-segment-view-model, ytd-transcript-segment-renderer";
+    const toSeconds = (time?: string | null) => {
+      const parts = (time || "").trim().split(":").map(Number);
+      if (!parts.length || parts.some(isNaN)) return null;
+      return parts.reduce((total, value) => total * 60 + value, 0);
+    };
+
+    let opened = false;
+    if (!document.querySelector(ROWS)) {
+      document
+        .querySelector<HTMLElement>("#description-inline-expander #expand, tp-yt-paper-button#expand")
+        ?.click();
+      await sleep(500);
+      const showButton = document.querySelector<HTMLElement>(
+        "ytd-video-description-transcript-section-renderer button"
+      );
+      if (!showButton) return null;
+      showButton.click();
+      opened = true;
+    }
+
+    let rows: Element[] = [];
+    for (let i = 0; i < 30; i++) {
+      rows = Array.from(document.querySelectorAll(ROWS));
+      if (rows.length) break;
+      await sleep(500);
+    }
+    if (!rows.length) return null;
+    await sleep(300);
+    rows = Array.from(document.querySelectorAll(ROWS));
+
+    const segments: TranscriptSegment[] = [];
+    for (const row of rows) {
+      let time: string | null | undefined;
+      let text: string | null | undefined;
+      if (row.tagName === "YTD-TRANSCRIPT-SEGMENT-RENDERER") {
+        time = row.querySelector(".segment-timestamp")?.textContent;
+        text = row.querySelector(".segment-text")?.textContent;
+      } else {
+        time = Array.from(row.querySelectorAll("div")).find((div) =>
+          /Timestamp$/.test(div.className)
+        )?.textContent;
+        text = row.querySelector('span[role="text"]')?.textContent;
+      }
+      const start = toSeconds(time);
+      const cleanText = (text || "").replace(/\s+/g, " ").trim();
+      if (start === null || !cleanText) continue;
+      segments.push({ start, end: start, text: cleanText });
+    }
+    for (let i = 0; i < segments.length; i++) {
+      segments[i].end = i + 1 < segments.length ? segments[i + 1].start : segments[i].start + 5;
+    }
+
+    if (opened) {
+      document
+        .querySelector(
+          'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
+        )
+        ?.querySelector<HTMLElement>("#visibility-button button, button[aria-label='Close transcript']")
+        ?.click();
+    }
+    return segments.length ? segments : null;
+  } catch (error) {
+    console.log("Reading transcript from page failed:", error);
+    return null;
+  }
+}

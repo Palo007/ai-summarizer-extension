@@ -86,7 +86,7 @@ export function YTSummarizer({
         });
 
         const aiUrlWithParam = `${url}?justTLDR`;
-        window.open(aiUrlWithParam, "_blank");
+        await chrome.runtime.sendMessage({ type: "OPEN_AI_TAB", url: aiUrlWithParam });
       } catch (err) {
         console.error("Failed to generate summary:", err);
       }

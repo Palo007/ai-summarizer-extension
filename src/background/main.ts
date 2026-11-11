@@ -105,3 +105,48 @@ chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
     return true;
   }
 });
+// Open the AI service tab from the background, next to the source tab.
+// Opening it here (not with window.open in the page) avoids pop-up blocking,
+// for example when the summary starts from the keyboard shortcut.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type !== "OPEN_AI_TAB" || !message.url) return;
+  const props: chrome.tabs.CreateProperties = { url: message.url, active: true };
+  if (sender.tab?.id !== undefined) {
+    props.index = sender.tab.index + 1;
+    props.openerTabId = sender.tab.id;
+  }
+  chrome.tabs.create(props);
+  sendResponse({ success: true });
+});
+
+// Keyboard shortcut (see "commands" in manifest.json): click the summarize
+// button that the content script shows on the current page.
+chrome.commands.onCommand.addListener(async (command, tab) => {
+  if (command !== "summarize-page") return;
+  try {
+    if (!tab?.id) {
+      [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    }
+    if (!tab?.id) return;
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const pick = (selector: string) =>
+          Array.from(document.querySelectorAll<HTMLButtonElement>(selector)).find(
+            (button) => !button.disabled
+          );
+        const button =
+          pick('#web-summarizer-root button[title$=" Summary"]') ||
+          pick('button[title^="Summarize with "]:not([title="Summarize with AI"])') ||
+          pick('button[title="Summarize with AI"]');
+        if (button) {
+          button.click();
+          return true;
+        }
+        return false;
+      },
+    });
+  } catch (err) {
+    console.warn("justTLDR shortcut: cannot run on this page", err);
+  }
+});
